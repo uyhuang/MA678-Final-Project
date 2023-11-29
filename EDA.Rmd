@@ -1,0 +1,76 @@
+---
+title: "EDA"
+author: "Yuchen Huang"
+date: "2023-11-21"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+
+suicide <- read.csv("master.csv")
+hdi <- read.csv("HDR21-22_Composite_indices_complete_time_series.csv")
+```
+
+## data cleaning
+
+```{r}
+##get only hdi from the data
+HDI <- hdi |>
+  select(country, starts_with("hdi_")) |>
+  select(-hdi_rank_2021)
+
+## remove NA
+HDI <- HDI |>
+  filter(is.na(hdi_1990)==F)
+
+## remove hdi in the column names
+colnames(HDI) <- gsub("hdi_", "", colnames(HDI)) 
+HDI <- HDI |> select(-starts_with("f"), -starts_with("m"))
+
+## make HDI use the same country names in suicide
+HDI$country[HDI$country == "Korea (Republic of)"] <- "Republic of Korea"
+
+## convert HDI into long format
+HDI_long <- HDI |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "HDI")
+
+## select suicide data after 1990
+suicide <- suicide |>
+  filter(year >= 1990)
+HDI_long$year <- as.integer(HDI_long$year)
+
+## combine HDI_long and suicide together
+Suicide <- suicide |>
+  left_join(HDI_long, by = c("country", "year")) |>
+  mutate(HDI.for.year = HDI)
+Suicide <- Suicide |>
+  select(-HDI)
+
+## check how many lines HDI is NA
+Suicide_na <- Suicide |>
+  filter(is.na(HDI.for.year)==T)
+unique(Suicide_na$country)
+```
+
+## Countries
+
+```{r}
+unique(suicide$country)
+length(unique(suicide$country))
+
+hist(x = suicide$suicides.100k.pop, breaks = 100)
+```
+
+## United State
+
+```{r}
+suicide_US <- suicide |>
+  filter(country == "United States")
+```
+
+## Reference
+
+[Human Development Reports](https://hdr.undp.org/data-center/documentation-and-downloads)
