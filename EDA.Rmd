@@ -50,18 +50,40 @@ Suicide <- Suicide |>
   select(-HDI)
 
 ## check how many lines HDI is NA
-Suicide_na <- Suicide |>
-  filter(is.na(HDI.for.year)==T)
-unique(Suicide_na$country)
+Suicide_clean <- Suicide |>
+  filter(is.na(HDI.for.year)==F)
+#unique(Suicide_na$country)
+paste0("There are ",length(unique(Suicide_clean$country))," countries in the data set")
+```
+
+```{r}
+##Add Life Expectancy, MYSI, EYSI, GNI per capita
+```
+
+```{r}
+## cleaning environment
+rm(hdi, HDI, HDI_long, suicide, Suicide, Suicide_na)
 ```
 
 ## Countries
 
 ```{r}
-unique(suicide$country)
-length(unique(suicide$country))
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country)
+```
 
-hist(x = suicide$suicides.100k.pop, breaks = 100)
+```{r}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country) +
+  geom_smooth(method = "lm", color = "blue", size = .5)
 ```
 
 ## United State
