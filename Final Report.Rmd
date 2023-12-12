@@ -1,0 +1,487 @@
+---
+title: "MA678 Final Report - Suicide"
+author: "Yuchen Huang"
+date: "2023-12-12"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(ggplot2)
+library(lme4)
+library(rstanarm)
+library(coefplot)
+library(kableExtra)
+library(performance)
+set.seed(678)
+
+suicide <- read.csv("master.csv")
+hdi <- read.csv("HDR21-22_Composite_indices_complete_time_series.csv")
+hdi$country[hdi$country == "Korea (Republic of)"] <- "Republic of Korea"
+```
+
+## ABSTRACT
+
+## INTRODUCTION
+
+Suicide is a major public mental health issue globally, affecting
+individuals across various socio-economic backgrounds. It is a complex
+phenomenon that could potentially be linked to a multitude of factors
+including economic conditions, societal norms, and individual
+circumstances.
+
+Here I want to focus on finding out the relationship between suicide
+rate and HDI(Human Development Index). A high HDI represents a high
+development, and it is calculated by four variables:
+
+-   `LE`: Life Expectancy
+
+-   `EI`: Education Index, and this is the mean of mean year schooling
+    and expected year schooling
+
+-   `GNI per capita`: Gross National Income per capita
+
+$$
+HDI = (\frac{LE-20}{85-20}\times\frac{MYSI+EYSI}{2}\times\frac{ln(GNIpc)-ln(100)}{ln(20,000)-ln(100)})^{\frac{1}{3}}
+$$
+
+Also, I will consider the gender and generations in the modeling, and I
+will explain the data more detailed in the following sections.
+
+## METHOD
+
+#### 1. Data Sources
+
+The data I used is a combination from two sources, I got the suicide
+rate from 1985 to 2016 from Kaggle and HDI with related index from
+UNDP(United Nations Development Programme) from 1990 to 2022. As the
+suicide data has many missing values in 2016, I selected data from
+1990-2015 to analyse.
+
+#### 2. Data cleaning
+
+The datasets are from different websites, the countries in the two
+datasets are different. So The first step of data cleaning is to find
+out the same countries shared in them.
+
+```{r, echo=F}
+##get only hdi from the data
+HDI <- hdi |>
+  select(country, starts_with("hdi_")) |>
+  select(-hdi_rank_2021)
+
+## remove NA
+HDI <- HDI |>
+  filter(is.na(hdi_1990)==F)
+
+## remove hdi in the column names
+colnames(HDI) <- gsub("hdi_", "", colnames(HDI)) 
+HDI <- HDI |> select(-starts_with("f"), -starts_with("m"))
+
+## convert HDI into long format
+HDI_long <- HDI |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "HDI")
+
+## select suicide data after 1990
+suicide <- suicide |>
+  filter(year >= 1990)
+HDI_long$year <- as.integer(HDI_long$year)
+
+## combine HDI_long and suicide together
+Suicide <- suicide |>
+  left_join(HDI_long, by = c("country", "year")) |>
+  mutate(HDI = HDI)
+Suicide <- Suicide |>
+  select(-HDI.for.year) |>
+  relocate(HDI, .before = gdp_for_year....)
+
+## check how many lines HDI is NA
+Suicide_clean <- Suicide |>
+  filter(is.na(HDI)==F)
+#unique(Suicide_na$country)
+paste0("There are ",length(unique(Suicide_clean$country))," countries in the cleaning data set, and all the large countries are inclued, like ", unique(Suicide_clean$country)[5]," and ", unique(Suicide_clean$country)[10], ".")
+```
+
+Then I add the HDI, LE, MSY, ESY, and GNI per capita to the cleaning
+data set.
+
+```{r, echo = F}
+##Add Life Expectancy, MYSI, EYSI, GNI per capita
+LE <- hdi |>
+  select(country, starts_with("le_19"), starts_with("le_20"))
+
+colnames(LE) <- gsub("le_", "", colnames(LE))
+
+LE <- LE |>
+  filter(is.na(`1990`)==F)
+
+LE_long <- LE |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "LE")
+
+LE_long$year <- as.integer(LE_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(LE_long, by = c("country", "year")) |>
+  mutate(LE = LE)|>
+  relocate(LE, .before = gdp_for_year....)
+
+EYS <- hdi |>
+  select(country, starts_with("eys_19"), starts_with("eys_20"))
+colnames(EYS) <- gsub("eys_", "", colnames(EYS))
+EYS <- EYS |>
+  filter(is.na(`1990`)==F)
+
+EYS_long <- EYS |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "EYS")
+EYS_long$year <- as.integer(EYS_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(EYS_long, by = c("country", "year")) |>
+  mutate(EYS = EYS) |>
+  relocate(EYS, .before = gdp_for_year....)
+
+MYS <- hdi |>
+  select(country, starts_with("mys_19"), starts_with("mys_20"))
+colnames(MYS) <- gsub("mys_", "", colnames(MYS))
+MYS <- MYS |>
+  filter(is.na(`1990`)==F)
+
+MYS_long <- MYS |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "MYS")
+MYS_long$year <- as.integer(MYS_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(MYS_long, by = c("country", "year")) |>
+  mutate(MYS = MYS) |>
+  relocate(MYS, .before = gdp_for_year....)
+
+GNI <- hdi |>
+  select(country, starts_with("gnipc_19"), starts_with("gnipc_20"))
+colnames(GNI) <- gsub("gnipc_", "", colnames(GNI))
+GNI <- GNI |>
+  filter(is.na(`1990`)==F)
+
+GNI_long <- GNI |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "GNI")
+GNI_long$year <- as.integer(GNI_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(GNI_long, by = c("country", "year")) |>
+  mutate(GNI = GNI) |>
+  relocate(GNI, .before = gdp_for_year....)
+
+```
+
+```{r, echo = FALSE, warning = FALSE}
+Suicide_clean <- Suicide_clean |>
+  select(-country.year, -gdp_for_year...., suicides_no, -age)
+## cleaning environment
+rm(hdi, HDI, HDI_long) 
+rm(suicide, Suicide, Suicide_na)
+rm(LE, LE_long)
+rm(MYS, MYS_long, EYS, EYS_long)
+rm(GNI, GNI_long)
+```
+
+However, the data from UNDP is the actual value instead of index, and
+they are in different scales, so I make all the imput into a scales like
+HDI(around 1). For LE, MYS, EYS, and GNI per capita, I directly use the
+formula above to transform them into a decimal less than 1.
+
+```{r, echo = F}
+Suicide_clean$LE <- (Suicide_clean$LE-20)/(85-20)
+Suicide_clean$EI <- (Suicide_clean$MYS+Suicide_clean$EYS)/2
+Suicide_clean$GNI <- (log(Suicide_clean$GNI)-log(100))/(log(20000)-log(100))
+Suicide_clean$population <-  Suicide_clean$population/100000
+Suicide_clean$gdp_per_capita.... <- log(Suicide_clean$gdp_per_capita....)/10
+
+Suicide_clean <- Suicide_clean |>
+  relocate(EI, .after = LE) |>
+  select(-MYS, -EYS)
+```
+
+#### 3. Data Introduction
+
+Figure1. is the first six rows of the cleaning data, and this is a long
+format data. Each row represents a group of people with a same gender
+from different countries in different years. The `suicides.100k.pop`
+means the ratio of $\frac{SuicideNum}{Population}\times10^6$ of the
+group.
+
+Figure 1.
+
+```{r, echo = F}
+kable(head(Suicide_clean[,c(1:3,6:10,12)]))
+```
+
+In figure2. here's the generation types I mention in the introduction
+part, this category is very important in social science analysis, which
+is why I choose to use it rather the age groups.
+
+Figure2.
+
+```{r, echo = F}
+kable(table(Suicide_clean$generation))
+```
+
+#### 4. EDA
+
+Figure 3. and 4. are a bar plot and a scatter considering different
+genders. It is obvious that female has a lower suicide rate than the
+male. This indicates that gender can be a significant variable in the
+models.
+
+Figure 3.&4.
+
+```{r, echo = F}
+Suicide_clean |>
+  ggplot(mapping = aes(HDI,(suicides.100k.pop))) +
+  geom_boxplot(aes(fill = sex), outlier.color = "red", outlier.shape = 16)
+
+Suicide_clean |>
+  ggplot() +
+  aes(x = HDI, y = suicides.100k.pop, color = sex) +
+  geom_point(size = .5)+
+  geom_smooth(method = "lm")
+```
+
+Figure5. is showing random 12 countries' data considering time versus
+suicide rate, with different colors representing different generations.
+
+It is be observed that different countries have very different trend of
+suicide rates, and people from different genders might vary very much.
+
+As a result, the generation and country will be two significant inputs
+as well.
+
+Figure 5.
+
+```{r, echo = F}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country)
+```
+
+#### 5. Models
+
+a)  Null Model
+
+-   Model
+
+$$
+Suiceds.100k.pop = \beta_0
+$$
+
+```{r, echo = F}
+null_model <- mean(Suicide_clean$suicides.100k.pop)
+```
+
+-   Residual Plot
+
+Figure 6.
+
+```{r, echo = F}
+null_pred <- Suicide_clean |> select(country, suicides.100k.pop)
+null_pred$predict <- rep(null_model, times = nrow(Suicide_clean))
+null_pred$resid <- null_pred$suicides.100k.pop -null_pred$predict
+
+ggplot(null_pred, aes(x = predict, y = resid)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of Null Mofrl", x = "Predicted Suicide Rate", y = "Residuals") +
+  theme_minimal()
+```
+
+b)  Complete Pooling
+
+-   Model
+
+$$
+Suiceds.100k.pop = \beta_{0}+\beta_1x_{year} + \beta_2x{sex} + \beta_3x_{population} + \beta_4{HDI} + \beta_5x_{LE} + 
+$$
+
+$$
+\beta_{6}x_{EI} + \beta_{7}x_{GNI} + \beta_{8}x_{gdp_per_capita} + \beta_{9}x_{generation} + \beta_{10}x_{country}
+$$
+
+```{r, echo = F}
+comp_model <- Suicide_clean |>
+  lm(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + country)
+#summary(comp_model)
+```
+
+-   Residual Plot
+
+Figure 7.
+
+```{r, echo = F}
+plot(comp_model,which =1)
+```
+
+c)  No Pooling
+
+-   Model
+
+$$
+Suiceds.100k.pop = \beta_{i}+\beta_{i1}x_{year} + \beta_{i2}x{sex} + \beta_{i3}x_{population} + \beta_{i4}{HDI} + \beta_{i5}x_{LE} + 
+$$
+
+$$
+\beta_{6i}x_{EI} + \beta_{7i}x_{GNI} + \beta_{8i}x_{gdp_per_capita} + \beta_{9i}x_{generation} + \beta_{10i}x_{country}
+$$
+
+```{r, echo = F}
+no_model <- Suicide_clean %>%
+  split(.$country) %>%
+  lapply(function(df) {
+    lm(suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation, data = df)
+  })
+```
+
+-   Visualization
+
+Figure 8.
+
+```{r, echo = F}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country) +
+  geom_smooth(method = "lm", color = "blue", linewidth = .5)
+```
+
+d)  Partial Pooling
+
+-   Model $$
+    Suiceds.100k.pop = \beta_{0i}+\beta_1x_{year} + \beta_2x{sex} + \beta_3x_{population} + \beta_4{HDI} + \beta_5x_{LE} + 
+    $$
+
+$$
+\beta_{6}x_{EI} + \beta_{7}x_{GNI} + \beta_{8}x_{gdp_per_capita} + \beta_{9}x_{generation} + \beta_{10}x_{country}
+$$
+
+```{r, echo = F}
+partial_model <- Suicide_clean |>
+  lmer(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + (1|country))
+#summary(partial_model)
+```
+
+-   Coefficient Plot
+
+Figure 9.
+
+```{r, echo = F}
+coefplot(partial_model)
+```
+
+```{r, echo = F, warning=F}
+selected_countries <- sample(unique(Suicide_clean$country), 12)
+
+selected_data <- Suicide_clean |>
+  filter(country %in% selected_countries)
+
+partial_model_selected <- 
+  lmer(suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + (1|country), data = selected_data)
+
+
+fixef_estimates_selected <- fixef(partial_model_selected)
+ranef_estimates_selected <- ranef(partial_model_selected)$country
+ranef_estimates_selected$`(Intercept)` <- ifelse(ranef_estimates_selected$`(Intercept)` <0,0,ranef_estimates_selected$`(Intercept)`)
+
+country_intercepts_selected <- 
+  data.frame(country = rownames(ranef_estimates_selected), intercept = ranef_estimates_selected[, "(Intercept)"])
+
+plot_data_selected <- selected_data |>
+  left_join(country_intercepts_selected, by = "country")
+
+
+ggplot(plot_data_selected, aes(x = year, y = suicides.100k.pop, group = country)) +
+  geom_point(aes(color = generation), size = 0.5) +
+  geom_line(aes(y = intercept + fixef_estimates_selected["year"]), color = "blue", size = 0.5) +
+  facet_wrap(~country) +
+  labs(title = "Varying Intercept with Shared Slope for Selected Countries") +
+  theme_minimal()
+```
+
+-   Residual Plot
+
+```{r, echo = F}
+partial_pred <- Suicide_clean |> select(country, suicides.100k.pop)
+partial_pred$predicted_suicide_rate <- predict(partial_model, newdata = Suicide_clean)
+partial_pred$predicted_suicide_rate <- ifelse(partial_pred$predicted_suicide_rate<=0, 0, partial_pred$predicted_suicide_rate)
+
+partial_pred$residuals <- partial_pred$suicides.100k.pop - partial_pred$predicted_suicide_rate
+
+partial_pred |>
+  ggplot(aes(x = predicted_suicide_rate, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of partial pooling", x = "Predicted Suicide Rate", y = "Residuals") +
+  theme_minimal()
+```
+
+## RESULT
+
+Here I will analyze how well these four models fit by calculate the
+$R^2$ , as the $R^2$ approaches to 1, it means that the model fits the
+model more; while $R^2$ approaches to 0, it means the model doesn't have
+much correlation with the data
+
+```{r, echo = F}
+r2_comp <- r2(comp_model)$R2
+r2_partial <- r2(partial_model)$R2
+
+r2_list <- lapply(no_model, function(model) {
+  summary(model)$r.squared
+})
+r2_values <- unlist(r2_list)
+r2_no <- sum(r2_values)/74
+
+```
+
+By calculation, I get the values of $R^2$ for the multilevel models.
+
+-   Partial pooling: 0.552
+
+-   Complete pooling 0.530
+
+-   No pooling: 0.651
+
+It seems that the No pooling model fits the best, and the complete
+pooling explained the model worst. However, all of them has a $R^2$
+larger than 0.5, this can somewhat show that all of these 3 voters can
+express the data.
+
+## DISCUSSION
+
+It seems that all the models
+
+Also, through the residual plots shows that there's some trend, so their
+might be some missing predictors that I haven't considered. This also
+might be caused by some correlation among the variables. However, based
+on what we learned so far, I cannot solve the problems yet.
+
+## Reference
+
+[Human Development
+Reports](https://hdr.undp.org/data-center/documentation-and-downloads)
+
+[Kaggle](https://www.kaggle.com/datasets/russellyates88/suicide-rates-overview-1985-to-2016/data)
+
+<https://hdr.undp.org/data-center/country-insights#/ranks>
+
+<https://databank.worldbank.org/source/world-development-indicators>
+
+<https://www.who.int/health-topics/suicide#tab=tab_1>

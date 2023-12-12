@@ -12,7 +12,6 @@ library(ggplot2)
 library(lme4)
 library(rstanarm)
 library(coefplot)
-library(broom)
 set.seed(678)
 
 suicide <- read.csv("master.csv")
@@ -167,21 +166,6 @@ Suicide_clean <- Suicide_clean |>
   select(-MYS, -EYS)
 ```
 
-## Training & Predicting data
-
-To make sure both data set containing same proportion of data if each country, I divide the cleaning data into two data sets using randomly.
-
-```{r}
-split_data <- Suicide_clean |> 
-  group_by(country) |>
-  group_split() |>
-  map(~split(., sample(c(TRUE, FALSE), nrow(.), replace = TRUE, prob = c(0.5, 0.5))))
-train_suicide <- map(split_data, 1) %>% bind_rows()
-pred_suicide <- map(split_data, 2) %>% bind_rows()
-
-rm(split_data)
-```
-
 ## EDA
 
 ```{r}
@@ -215,78 +199,52 @@ six models
 -   model
 
 ```{r}
-null_model <- mean(train_suicide$suicides.100k.pop)
+null_model <- mean(Suicide_clean$suicides.100k.pop)
 ```
 
 -   Prediction and Plot
 
 ```{r}
-null_pred <- pred_suicide |> select(country, suicides.100k.pop)
-null_pred$predicted_suicide_rate <- null_model
+null_pred <- Suicide_clean |> select(country, suicides.100k.pop)
+null_pred$predict <- rep(null_model, times = nrow(Suicide_clean))
+null_pred$resid <- null_pred$suicides.100k.pop -null_pred$predict
 
-null_pred$residuals <- null_pred$suicides.100k.pop - null_pred$predicted_suicide_rate
-
-null_pred |>
-  ggplot(aes(x = predicted_suicide_rate, y = residuals)) +
+ggplot(null_pred, aes(x = predict, y = resid)) +
   geom_point() +
   geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Residual Plot of Null Model", x = "Predicted Suicide Rate", y = "Residuals") +
+  labs(title = "Residual Plot of Null Mofrl", x = "Predicted Suicide Rate", y = "Residuals") +
   theme_minimal()
-
 ```
 
 #### Complete Pooling
 
 ```{r}
-comp_model <- train_suicide |>
+comp_model <- Suicide_clean |>
   lm(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + country)
 summary(comp_model)
+paste0("R squared is 0.5298")
 ```
 
-
 ```{r}
-comp_pred <- pred_suicide |> select(country, suicides.100k.pop)
-comp_pred$predicted_suicide_rate <- predict(comp_model, newdata = pred_suicide)
-comp_pred$predicted_suicide_rate <- ifelse(comp_pred$predicted_suicide_rate < 0, 0, comp_pred$predicted_suicide_rate)
-
-# 计算残差
-comp_pred$residuals <- comp_pred$suicides.100k.pop - comp_pred$predicted_suicide_rate
-
-# 绘制残差图
-ggplot(comp_pred, aes(x = predicted_suicide_rate, y = residuals)) +
-  geom_point() +
-  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
-  labs(title = "Residual Plot of complete pooling", x = "Predicted Suicide Rate", y = "Residuals") +
-  theme_minimal()
-
-tidy_comp_model <- tidy(comp_model, conf.int = TRUE)
-
-# 绘制系数图
-ggplot(tidy_comp_model, aes(x = term, y = estimate, ymin = conf.low, ymax = conf.high)) +
-  geom_pointrange() +
-  coord_flip() +  # 翻转坐标轴，使得变量名在 y 轴上
-  xlab("Coefficient") +
-  ylab("") +
-  theme_minimal()
-
-coefplot(comp_pred)
+plot(comp_model,which =1)
 ```
 
 #### Partial Pooling
 
-```{r}
-partial_model <- train_suicide |>
+```{r, warning=F}
+partial_model <- Suicide_clean |>
   lmer(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + (1|country))
-summary(partial_model)
+#summary(partial_model)
 
 ```
 
 -   plot
 
 ```{r}
-# 使用 partial_model 对 pred_suicide 进行预测
-partial_pred <- pred_suicide |> select(country, suicides.100k.pop)
-partial_pred$predicted_suicide_rate <- posterior_predict(partial_model, newdata = pred_suicide)
+coefplot(partial_model, title = "")
+
+partial_pred <- Suicide_clean |> select(country, suicides.100k.pop)
+partial_pred$predicted_suicide_rate <- predict(partial_model, newdata = Suicide_clean)
 partial_pred$predicted_suicide_rate <- ifelse(partial_pred$predicted_suicide_rate<=0, 0, partial_pred$predicted_suicide_rate)
 
 partial_pred$residuals <- partial_pred$suicides.100k.pop - partial_pred$predicted_suicide_rate
@@ -298,21 +256,56 @@ partial_pred |>
   labs(title = "Residual Plot of partial pooling", x = "Predicted Suicide Rate", y = "Residuals") +
   theme_minimal()
 
-ggplot(partial_pred, aes(x = suicides.100k.pop, y = predicted_suicide_rate)) +
-  geom_point(alpha = 0.5) +
-  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
-  labs(title = "PartialPredicted vs Actual Suicide Rates",
-       x = "Actual Suicide Rate (per 100k)",
-       y = "Predicted Suicide Rate (per 100k)") +
-  theme_minimal()
 
+```
+
+```{r}
+selected_countries <- sample(unique(Suicide_clean$country), 12)
+
+selected_data <- Suicide_clean |>
+  filter(country %in% selected_countries)
+
+partial_model_selected <- lmer(suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + (1|country), data = selected_data)
+
+fixef_estimates_selected <- fixef(partial_model_selected)
+ranef_estimates_selected <- ranef(partial_model_selected)$country
+
+country_intercepts_selected <- data.frame(country = rownames(ranef_estimates_selected), intercept = ranef_estimates_selected[, "(Intercept)"])
+
+plot_data_selected <- selected_data |>
+  left_join(country_intercepts_selected, by = "country")
+
+ggplot(plot_data_selected, aes(x = year, y = suicides.100k.pop, group = country)) +
+  geom_point(aes(color = generation), size = 0.5) +
+  geom_line(aes(y = intercept + fixef_estimates_selected["year"] * year), color = "blue", size = 0.5) +
+  facet_wrap(~country) +
+  labs(title = "Varying Intercept with Shared Slope for Selected Countries") +
+  theme_minimal()
 ```
 
 #### No Pooling
 
 ```{r}
-
+no_model <- Suicide_clean |>
+  split(.$country) |>
+  lapply(function(df) {
+    lm(suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation, data = df)
+  })
+no_model[1]
+length(no_model)
 ```
+
+```{r}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country) +
+  geom_smooth(method = "lm", color = "blue", linewidth = .5)
+```
+
+#### 
 
 ## Countries
 
