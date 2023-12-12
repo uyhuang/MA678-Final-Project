@@ -12,6 +12,7 @@ library(ggplot2)
 
 suicide <- read.csv("master.csv")
 hdi <- read.csv("HDR21-22_Composite_indices_complete_time_series.csv")
+hdi$country[hdi$country == "Korea (Republic of)"] <- "Republic of Korea"
 ```
 
 ## data cleaning
@@ -29,9 +30,6 @@ HDI <- HDI |>
 ## remove hdi in the column names
 colnames(HDI) <- gsub("hdi_", "", colnames(HDI)) 
 HDI <- HDI |> select(-starts_with("f"), -starts_with("m"))
-
-## make HDI use the same country names in suicide
-HDI$country[HDI$country == "Korea (Republic of)"] <- "Republic of Korea"
 
 ## convert HDI into long format
 HDI_long <- HDI |>
@@ -55,10 +53,81 @@ Suicide_clean <- Suicide |>
 #unique(Suicide_na$country)
 paste0("There are ",length(unique(Suicide_clean$country))," countries in the data set")
 ```
-
+Add LE
 ```{r}
 ##Add Life Expectancy, MYSI, EYSI, GNI per capita
+LE <- hdi |>
+  select(country, starts_with("le_19"), starts_with("le_20"))
+
+colnames(LE) <- gsub("le_", "", colnames(LE))
+
+LE <- LE |>
+  filter(is.na(`1990`)==F)
+
+LE_long <- LE |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "LE")
+
+LE_long$year <- as.integer(LE_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(LE_long, by = c("country", "year")) |>
+  mutate(LE = LE)|>
+  relocate(LE, .before = gdp_for_year....)
+
 ```
+
+Add MYSI and EYSI
+```{r}
+EYS <- hdi |>
+  select(country, starts_with("eys_19"), starts_with("eys_20"))
+colnames(EYS) <- gsub("eys_", "", colnames(EYS))
+EYS <- EYS |>
+  filter(is.na(`1990`)==F)
+
+EYS_long <- EYS |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "EYS")
+EYS_long$year <- as.integer(EYS_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(EYS_long, by = c("country", "year")) |>
+  mutate(EYS = EYS) |>
+  relocate(EYS, .before = gdp_for_year....)
+
+MYS <- hdi |>
+  select(country, starts_with("mys_19"), starts_with("mys_20"))
+colnames(MYS) <- gsub("mys_", "", colnames(MYS))
+MYS <- MYS |>
+  filter(is.na(`1990`)==F)
+
+MYS_long <- MYS |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "MYS")
+MYS_long$year <- as.integer(MYS_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(MYS_long, by = c("country", "year")) |>
+  mutate(MYS = MYS) |>
+  relocate(MYS, .before = gdp_for_year....)
+```
+
+Add GNI per Capita
+```{r}
+GNI <- hdi |>
+  select(country, starts_with("gnipc_19"), starts_with("gnipc_20"))
+colnames(GNI) <- gsub("gnipc_", "", colnames(GNI))
+GNI <- GNI |>
+  filter(is.na(`1990`)==F)
+
+GNI_long <- GNI |>
+  pivot_longer(cols = -country, names_to = "year", values_to = "GNI")
+GNI_long$year <- as.integer(GNI_long$year)
+
+Suicide_clean <- Suicide_clean |>
+  left_join(GNI_long, by = c("country", "year")) |>
+  mutate(GNI = GNI) |>
+  relocate(GNI, .before = gdp_for_year....)
+
+```
+
 
 ```{r}
 ## cleaning environment
