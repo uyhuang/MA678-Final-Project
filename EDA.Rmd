@@ -9,13 +9,22 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(ggplot2)
+library(lme4)
+library(rstanarm)
+library(coefplot)
+library(broom)
+set.seed(678)
 
 suicide <- read.csv("master.csv")
 hdi <- read.csv("HDR21-22_Composite_indices_complete_time_series.csv")
 hdi$country[hdi$country == "Korea (Republic of)"] <- "Republic of Korea"
 ```
 
-## data cleaning
+$$
+HDI = (\frac{LE-20}{85-20}\times\frac{MYSI+EYSI}{2}\times\frac{ln(GNIpc)-ln(100)}{ln(20,000)-ln(100)})^{\frac{1}{3}}
+$$
+
+## Data Cleaning
 
 ```{r}
 ##get only hdi from the data
@@ -43,17 +52,20 @@ HDI_long$year <- as.integer(HDI_long$year)
 ## combine HDI_long and suicide together
 Suicide <- suicide |>
   left_join(HDI_long, by = c("country", "year")) |>
-  mutate(HDI.for.year = HDI)
+  mutate(HDI = HDI)
 Suicide <- Suicide |>
-  select(-HDI)
+  select(-HDI.for.year) |>
+  relocate(HDI, .before = gdp_for_year....)
 
 ## check how many lines HDI is NA
 Suicide_clean <- Suicide |>
-  filter(is.na(HDI.for.year)==F)
+  filter(is.na(HDI)==F)
 #unique(Suicide_na$country)
 paste0("There are ",length(unique(Suicide_clean$country))," countries in the data set")
 ```
+
 Add LE
+
 ```{r}
 ##Add Life Expectancy, MYSI, EYSI, GNI per capita
 LE <- hdi |>
@@ -77,6 +89,7 @@ Suicide_clean <- Suicide_clean |>
 ```
 
 Add MYSI and EYSI
+
 ```{r}
 EYS <- hdi |>
   select(country, starts_with("eys_19"), starts_with("eys_20"))
@@ -110,6 +123,7 @@ Suicide_clean <- Suicide_clean |>
 ```
 
 Add GNI per Capita
+
 ```{r}
 GNI <- hdi |>
   select(country, starts_with("gnipc_19"), starts_with("gnipc_20"))
@@ -128,13 +142,188 @@ Suicide_clean <- Suicide_clean |>
 
 ```
 
+```{r, echo = FALSE, warning = FALSE}
+Suicide_clean <- Suicide_clean |>
+  select(-country.year, -gdp_for_year...., suicides_no, -age)
+## cleaning environment
+rm(hdi, HDI, HDI_long) 
+rm(suicide, Suicide, Suicide_na)
+rm(LE, LE_long)
+rm(MYS, MYS_long, EYS, EYS_long)
+rm(GNI, GNI_long)
+```
+
+Convert all the input in a roughly same scale
 
 ```{r}
-## cleaning environment
-rm(hdi, HDI, HDI_long, suicide, Suicide, Suicide_na)
+Suicide_clean$LE <- (Suicide_clean$LE-20)/(85-20)
+Suicide_clean$EI <- (Suicide_clean$MYS+Suicide_clean$EYS)/2
+Suicide_clean$GNI <- (log(Suicide_clean$GNI)-log(100))/(log(20000)-log(100))
+Suicide_clean$population <-  Suicide_clean$population/100000
+Suicide_clean$gdp_per_capita.... <- log(Suicide_clean$gdp_per_capita....)/10
+
+Suicide_clean <- Suicide_clean |>
+  relocate(EI, .after = LE) |>
+  select(-MYS, -EYS)
+```
+
+## Training & Predicting data
+
+To make sure both data set containing same proportion of data if each country, I divide the cleaning data into two data sets using randomly.
+
+```{r}
+split_data <- Suicide_clean |> 
+  group_by(country) |>
+  group_split() |>
+  map(~split(., sample(c(TRUE, FALSE), nrow(.), replace = TRUE, prob = c(0.5, 0.5))))
+train_suicide <- map(split_data, 1) %>% bind_rows()
+pred_suicide <- map(split_data, 2) %>% bind_rows()
+
+rm(split_data)
+```
+
+## EDA
+
+```{r}
+Suicide_clean |>
+  ggplot(mapping = aes(HDI,(suicides.100k.pop))) +
+  geom_boxplot(aes(fill = sex), outlier.color = "red", outlier.shape = 16)
+```
+
+```{r}
+Suicide_clean |>
+  ggplot() +
+  aes(x = HDI, y = suicides.100k.pop, color = sex) +
+  geom_point(size = .5)
+```
+
+```{r}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country)
+```
+
+## Model
+
+six models
+
+#### Null Model
+
+-   model
+
+```{r}
+null_model <- mean(train_suicide$suicides.100k.pop)
+```
+
+-   Prediction and Plot
+
+```{r}
+null_pred <- pred_suicide |> select(country, suicides.100k.pop)
+null_pred$predicted_suicide_rate <- null_model
+
+null_pred$residuals <- null_pred$suicides.100k.pop - null_pred$predicted_suicide_rate
+
+null_pred |>
+  ggplot(aes(x = predicted_suicide_rate, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of Null Model", x = "Predicted Suicide Rate", y = "Residuals") +
+  theme_minimal()
+
+```
+
+#### Complete Pooling
+
+```{r}
+comp_model <- train_suicide |>
+  lm(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + country)
+summary(comp_model)
+```
+
+
+```{r}
+comp_pred <- pred_suicide |> select(country, suicides.100k.pop)
+comp_pred$predicted_suicide_rate <- predict(comp_model, newdata = pred_suicide)
+comp_pred$predicted_suicide_rate <- ifelse(comp_pred$predicted_suicide_rate < 0, 0, comp_pred$predicted_suicide_rate)
+
+# 计算残差
+comp_pred$residuals <- comp_pred$suicides.100k.pop - comp_pred$predicted_suicide_rate
+
+# 绘制残差图
+ggplot(comp_pred, aes(x = predicted_suicide_rate, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of complete pooling", x = "Predicted Suicide Rate", y = "Residuals") +
+  theme_minimal()
+
+tidy_comp_model <- tidy(comp_model, conf.int = TRUE)
+
+# 绘制系数图
+ggplot(tidy_comp_model, aes(x = term, y = estimate, ymin = conf.low, ymax = conf.high)) +
+  geom_pointrange() +
+  coord_flip() +  # 翻转坐标轴，使得变量名在 y 轴上
+  xlab("Coefficient") +
+  ylab("") +
+  theme_minimal()
+
+coefplot(comp_pred)
+```
+
+#### Partial Pooling
+
+```{r}
+partial_model <- train_suicide |>
+  lmer(formula = suicides.100k.pop ~ year + sex + population + HDI + LE + EI + GNI + gdp_per_capita.... + generation + (1|country))
+summary(partial_model)
+
+```
+
+-   plot
+
+```{r}
+# 使用 partial_model 对 pred_suicide 进行预测
+partial_pred <- pred_suicide |> select(country, suicides.100k.pop)
+partial_pred$predicted_suicide_rate <- posterior_predict(partial_model, newdata = pred_suicide)
+partial_pred$predicted_suicide_rate <- ifelse(partial_pred$predicted_suicide_rate<=0, 0, partial_pred$predicted_suicide_rate)
+
+partial_pred$residuals <- partial_pred$suicides.100k.pop - partial_pred$predicted_suicide_rate
+
+partial_pred |>
+  ggplot(aes(x = predicted_suicide_rate, y = residuals)) +
+  geom_point() +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+  labs(title = "Residual Plot of partial pooling", x = "Predicted Suicide Rate", y = "Residuals") +
+  theme_minimal()
+
+ggplot(partial_pred, aes(x = suicides.100k.pop, y = predicted_suicide_rate)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "PartialPredicted vs Actual Suicide Rates",
+       x = "Actual Suicide Rate (per 100k)",
+       y = "Predicted Suicide Rate (per 100k)") +
+  theme_minimal()
+
+```
+
+#### No Pooling
+
+```{r}
+
 ```
 
 ## Countries
+
+```{r}
+Suicide_clean |> 
+  subset(country %in% sample(Suicide_clean$country, 12)) |>
+  ggplot() +
+  aes(x = year, y = suicides.100k.pop, color = generation) +
+  geom_point(size = .5) +
+  facet_wrap(~country)
+```
 
 ```{r}
 Suicide_clean |> 
